@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="hr">
+<head>
+  <meta charset="UTF-8" />
+  <title>YouTube Auto Stop Player</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      max-width: 800px;
+      margin: 32px auto;
+      padding: 0 16px;
+    }
+    label {
+      display: block;
+      margin-bottom: 4px;
+      font-weight: 600;
+    }
+    input {
+      width: 100%;
+      padding: 8px;
+      margin-bottom: 12px;
+      box-sizing: border-box;
+    }
+    button {
+      padding: 8px 16px;
+      font-size: 15px;
+      cursor: pointer;
+      margin-right: 8px;
+    }
+    #player {
+      margin-top: 24px;
+      aspect-ratio: 16 / 9;
+      max-width: 100%;
+    }
+    .error {
+      color: #c00;
+      margin-top: 8px;
+    }
+    .hint {
+      font-size: 13px;
+      color: #555;
+      margin-bottom: 16px;
+    }
+  </style>
+</head>
+<body>
+  <h1>YouTube auto-stop za kviz</h1>
+
+  <label for="youtubeUrl">YouTube link</label>
+  <input
+    id="youtubeUrl"
+    type="text"
+    placeholder="https://www.youtube.com/watch?v=j3BRFtZQnW8"
+  />
+
+  <label for="stopTime">Vrijeme zaustavljanja (mm:ss.mmm)</label>
+  <input
+    id="stopTime"
+    type="text"
+    placeholder="npr. 01:47.025"
+  />
+  <div class="hint">
+    Primjer: <b>1 minuta, 47 sekundi i 25 ms</b> → (1×60 + 47)×1000 + 25 = <b>107025 ms</b><br />
+    Format: <b>mm:ss.mmm</b> (milisekunde su opcionalne, npr. može i <b>01:47</b>)
+  </div>
+
+  <button id="loadPlayBtn">Učitaj i pusti s auto-stopom</button>
+  <button id="pauseBtn">Pauza</button>
+  <button id="resumeBtn">Nastavi</button>
+
+  <div id="error" class="error"></div>
+
+  <div id="player"></div>
+
+  <!-- YouTube IFrame API -->
+  <script src="https://www.youtube.com/iframe_api"></script>
+  <script>
+    let player = null;
+    let stopAtMs = null;
+    let checkInterval = null;
+
+    function extractVideoId(url) {
+      try {
+        // podržava: watch?v=, youtu.be/, embed/
+        const u = new URL(url.trim());
+        if (u.hostname === "youtu.be") {
+          return u.pathname.slice(1);
+        }
+        if (u.searchParams.get("v")) {
+          return u.searchParams.get("v");
+        }
+        const parts = u.pathname.split("/");
+        const embedIndex = parts.indexOf("embed");
+        if (embedIndex !== -1 && parts[embedIndex + 1]) {
+          return parts[embedIndex + 1];
+        }
+      } catch (e) {
+        // ako nije validan URL, pokušaj tretirati kao direktan videoId
+        return url.trim();
+      }
+      return null;
+    }
+
+    // mm:ss.mmm -> milisekunde
+    function parseTimeToMs(value) {
+      const v = value.trim();
+      // dozvoli: mm:ss, m:ss, mm:ss.mmm, m:ss.mmm
+      const match = v.match(/^(\d+):([0-5]?\d)(?:\.(\d{1,3}))?$/);
+      if (!match) return null;
+
+      const minutes = parseInt(match[1], 10);
+      const seconds = parseInt(match[2], 10);
+      let millis = 0;
+
+      if (match[3] !== undefined) {
+        // npr. "5" -> "500", "25" -> "250", "123" -> "123"
+        const msStr = match[3].padEnd(3, "0");
+        millis = parseInt(msStr, 10);
+      }
+
+      return (minutes * 60 + seconds) * 1000 + millis;
+    }
+
+    function onYouTubeIframeAPIReady() {
+      // Ova funkcija se poziva kada je YouTube IFrame API spreman
+    }
+
+    function startChecking() {
+      if (!player || stopAtMs == null) return;
+      const stopSec = stopAtMs / 1000;
+
+      if (checkInterval) {
+        clearInterval(checkInterval);
+      }
+
+      checkInterval = setInterval(() => {
+        if (!player || typeof player.getCurrentTime !== "function") return;
+        const t = player.getCurrentTime();
+        if (t >= stopSec) {
+          player.pauseVideo();
+          clearInterval(checkInterval);
+          checkInterval = null;
+        }
+      }, 50); // provjera svakih 50 ms
+    }
+
+    document.getElementById("loadPlayBtn").addEventListener("click", () => {
+      const url = document.getElementById("youtubeUrl").value;
+      const stopTimeInput = document.getElementById("stopTime").value;
+      const errorEl = document.getElementById("error");
+      errorEl.textContent = "";
+
+      const videoId = extractVideoId(url);
+      if (!videoId) {
+        errorEl.textContent = "Ne mogu prepoznati video ID iz linka.";
+        return;
+      }
+
+      const ms = parseTimeToMs(stopTimeInput);
+      if (ms === null || ms <= 0) {
+        errorEl.textContent = "Unesi valjano vrijeme u formatu mm:ss.mmm (npr. 01:47.025).";
+        return;
+      }
+
+      stopAtMs = ms;
+
+      const createOrLoad = () => {
+        if (!player) {
+          player = new YT.Player("player", {
+            videoId,
+            playerVars: {
+              rel: 0,
+              origin: window.location.origin
+            },
+            events: {
+              onReady: () => {
+                player.playVideo();
+                startChecking();
+              },
+              onError: (e) => {
+                errorEl.textContent = "YouTube error: " + e.data;
+              }
+            }
+          });
+        } else {
+          player.loadVideoById(videoId);
+          player.playVideo();
+          startChecking();
+        }
+      };
+
+      if (typeof YT === "undefined" || typeof YT.Player === "undefined") {
+        errorEl.textContent = "YouTube API se još učitava... probaj za par sekundi.";
+        return;
+      }
+
+      createOrLoad();
+    });
+
+    document.getElementById("pauseBtn").addEventListener("click", () => {
+      if (player && typeof player.pauseVideo === "function") {
+        player.pauseVideo();
+      }
+    });
+
+    document.getElementById("resumeBtn").addEventListener("click", () => {
+      if (player && typeof player.playVideo === "function") {
+        player.playVideo();
+        startChecking();
+      }
+    });
+  </script>
+</body>
+</html>
